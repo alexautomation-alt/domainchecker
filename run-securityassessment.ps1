@@ -1,19 +1,6 @@
 <#
 .SYNOPSIS
     Generates a comprehensive security assessment report for a specified domain.
-
-.DESCRIPTION
-    Runs security checks across email, web, and infrastructure controls, then generates
-    an HTML report with findings, risk rating, and recommendations.
-
-.PARAMETER Domain
-    The domain name to assess (required).
-
-.PARAMETER OutputPath
-    Directory where the report will be saved. Defaults to '.\Reports'
-
-.EXAMPLE
-    .\Run-SecurityAssessment3.ps1 -Domain "example.com"
 #>
 
 param(
@@ -21,53 +8,79 @@ param(
     [string]$OutputPath = ".\Reports"
 )
 
+# =========================
+# FIX: Always run from script directory
+# =========================
+if ($PSScriptRoot) {
+    Set-Location $PSScriptRoot
+} else {
+    $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+    Set-Location $PSScriptRoot
+}
+
+# =========================
 # Initialize output directory
+# =========================
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 
-# Import security check modules
-Import-Module .\EmailChecks.psm1          -Force
-Import-Module .\WebChecks.psm1            -Force
-Import-Module .\InfrastructureChecks.psm1 -Force
+# =========================
+# FIX: Correct module paths using $PSScriptRoot
+# =========================
+Import-Module "$PSScriptRoot\Modules\EmailChecks.psm1" -Force
+Import-Module "$PSScriptRoot\Modules\WebChecks.psm1" -Force
+Import-Module "$PSScriptRoot\Modules\InfrastructureChecks.psm1" -Force
 
-# Execute security checks across all domains
+# =========================
+# Execute security checks
+# =========================
 $emailResults = Test-EmailSecurity   -Domain $Domain
 $webResults   = Test-WebSecurity     -Domain $Domain
 $infraResults = Test-Infrastructure  -Domain $Domain
 
-# Add placeholder for data breach checks (requires API key)
+# Placeholder for breach checks
 $breachResults = @([PSCustomObject]@{
     Check   = "Data Breach Check"
     Status  = "Warn"
     Details = "Disabled - API key required"
 })
 
-# Combine all results
+# =========================
+# Combine results
+# =========================
 $allResults = $emailResults + $webResults + $infraResults + $breachResults
 
-# Calculate summary statistics
+# =========================
+# Summary stats
+# =========================
 $counts = @{
     Pass = ($allResults | Where-Object Status -eq "Pass").Count
     Fail = ($allResults | Where-Object Status -eq "Fail").Count
     Warn = ($allResults | Where-Object Status -eq "Warn").Count
 }
-$total        = $allResults.Count
-$scorePercent = [math]::Round(($counts.Pass / $total) * 100, 0)
 
-# Determine risk rating based on score
+$total = $allResults.Count
+$scorePercent = if ($total -gt 0) {
+    [math]::Round(($counts.Pass / $total) * 100, 0)
+} else {
+    0
+}
+
+# Risk rating
 $riskRating = switch ($scorePercent) {
-    { $_ -ge 85 } { "Low";    break }
+    { $_ -ge 85 } { "Low"; break }
     { $_ -ge 60 } { "Medium"; break }
-    default        { "High" }
+    default { "High" }
 }
 
-# Map risk rating to descriptive language
 $riskWord = switch ($riskRating) {
-    "Low"    { "minimal" }
+    "Low" { "minimal" }
     "Medium" { "moderate" }
-    "High"   { "significant" }
+    "High" { "significant" }
 }
 
-# Build HTML table rows for findings
+# =========================
+# Build findings table
+# =========================
 $findingsRows = ($allResults | ForEach-Object {
     $badge = switch ($_.Status) {
         "Pass" { '<span class="badge pass">Pass</span>' }
@@ -77,36 +90,37 @@ $findingsRows = ($allResults | ForEach-Object {
     "<tr><td>$($_.Check)</td><td>$badge</td><td>$($_.Details)</td></tr>"
 }) -join "`n"
 
-# Build recommendations list for failed/warned checks
+# Recommendations
 $recItems = ($allResults | Where-Object Status -ne "Pass" | ForEach-Object {
     $icon = if ($_.Status -eq "Fail") { "[FAIL]" } else { "[WARN]" }
     "<li>$icon <strong>$($_.Check):</strong> $($_.Details)</li>"
 }) -join "`n"
 
-# Fallback if all checks passed
 if ([string]::IsNullOrWhiteSpace($recItems)) {
     $recItems = "<li>[OK] No significant issues identified.</li>"
 }
 
-# Format report generation timestamp
+# Timestamp
 $generated = (Get-Date).ToUniversalTime().ToString("dd MMM yyyy HH:mm 'UTC'")
 
-# Select visual indicators based on risk rating
+# Risk visuals
 $riskIcon = switch ($riskRating) {
-    "Low"    { "&#9989;" }
+    "Low" { "&#9989;" }
     "Medium" { "&#9888;&#65039;" }
-    "High"   { "&#128308;" }
+    "High" { "&#128308;" }
 }
 
-# Calculate SVG progress ring appearance
 $ringStroke = switch ($riskRating) {
-    "Low"    { "var(--ring-pass)" }
+    "Low" { "var(--ring-pass)" }
     "Medium" { "var(--ring-warn)" }
-    default  { "var(--ring-fail)" }
+    default { "var(--ring-fail)" }
 }
+
 $ringOffset = 314.16 - (314.16 * $scorePercent / 100)
 
-# Generate HTML report
+# =========================
+# HTML REPORT (UNCHANGED BELOW THIS POINT)
+# =========================
 $html = @"
 <!DOCTYPE html>
 <html lang="en">
@@ -282,11 +296,12 @@ btn.textContent=dark?'Light Mode':'Dark Mode';
 </html>
 "@
 
-# Save report to file
+# =========================
+# Save report
+# =========================
 $reportFile = Join-Path $OutputPath "SecurityAssessment_${Domain}_$(Get-Date -Format 'yyyyMMdd_HHmmss').html"
 $html | Out-File $reportFile -Encoding UTF8
 
-# Output confirmation and open report
 Write-Host ""
 Write-Host "  Report saved: $reportFile" -ForegroundColor Green
 Write-Host ""
