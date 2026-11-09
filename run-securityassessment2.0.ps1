@@ -36,7 +36,8 @@
     are accepted and cleaned up automatically.
 
 .PARAMETER OutputPath
-    Folder to save the report in. Defaults to a "Reports" folder next to the script.
+    Folder to save the report in. Defaults to a "Reports" folder next to the script
+    (or the current folder if the script location can't be determined).
 
 .PARAMETER NoOpen
     Do not open the report in the browser when finished. Use this when running
@@ -73,12 +74,22 @@
 
 .NOTES
     Name    : Invoke-DomainCheck.ps1
-    Version : 2.0.0
+    Version : 2.0.1
     Author  : Alex Wilson - ACC London
 
     ===========================================================================
     CHANGELOG
     ===========================================================================
+    2.0.1
+      Fixed
+        - "Cannot bind argument to parameter 'Path' because it is an empty
+          string" on startup. $PSScriptRoot can be empty when used in a param()
+          default in Windows PowerShell 5.1 (and when run via F8 / Run Selection).
+          -OutputPath now defaults to empty and is resolved after the param
+          block using $ScriptDir, which falls back to $MyInvocation and then the
+          current folder.
+        - Module paths now use $ScriptDir for the same reason.
+
     2.0.0
       Fixed
         - Results are now wrapped in @() before combining, so a module returning a
@@ -132,7 +143,7 @@ param(
     [Parameter(Mandatory = $true, Position = 0)]
     [string]$Domain,
 
-    [string]$OutputPath = (Join-Path $PSScriptRoot 'Reports'),
+    [string]$OutputPath,
 
     [switch]$NoOpen,
 
@@ -144,7 +155,24 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.0.1'
+
+# -----------------------------------------------------------------------------
+# Resolve the script folder.
+# $PSScriptRoot can be empty in Windows PowerShell 5.1 (param defaults, F8/Run
+# Selection in ISE or VS Code, dot-sourcing), so fall back through other options.
+# -----------------------------------------------------------------------------
+$ScriptDir = if ($PSScriptRoot) {
+    $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    (Get-Location).Path
+}
+
+if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+    $OutputPath = Join-Path $ScriptDir 'Reports'
+}
 
 # =============================================================================
 # Helper functions
@@ -200,7 +228,7 @@ function Invoke-CheckModule {
         [Parameter(Mandatory)][string]$Domain
     )
 
-    $modulePath = Join-Path (Join-Path $PSScriptRoot 'Modules') $ModuleFile
+    $modulePath = Join-Path (Join-Path $ScriptDir 'Modules') $ModuleFile
 
     try {
         if (-not (Test-Path -LiteralPath $modulePath)) {
