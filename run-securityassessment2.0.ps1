@@ -52,6 +52,11 @@
     embedded in the report so it displays offline and in email clients that block
     remote images. If not supplied, the ACC London website logo URL is used.
 
+.PARAMETER DnsServer
+    Optional DNS server for all lookups, e.g. 1.1.1.1 or 8.8.8.8. Use this when
+    the local/office DNS gives different answers to public DNS (split DNS,
+    cached records). Defaults to the system resolver.
+
 .PARAMETER PassThru
     Return a summary object (domain, score, risk, report path) to the pipeline.
 
@@ -66,6 +71,11 @@
     Headless run for RMM, saving HTML and JSON to a custom folder.
 
 .EXAMPLE
+    .\Invoke-DomainCheck.ps1 -Domain example.co.uk -DnsServer 1.1.1.1
+
+    Runs all DNS lookups against Cloudflare's public resolver.
+
+.EXAMPLE
     "client1.co.uk","client2.com" | ForEach-Object {
         .\Invoke-DomainCheck.ps1 -Domain $_ -NoOpen -PassThru
     } | Format-Table Domain, Score, Risk
@@ -74,12 +84,25 @@
 
 .NOTES
     Name    : Invoke-DomainCheck.ps1
-    Version : 2.0.1
+    Version : 2.1.0
     Author  : Alex Wilson - ACC London
 
     ===========================================================================
     CHANGELOG
     ===========================================================================
+    2.1.0
+      Fixed
+        - The final catch block never reached "exit 1": with
+          $ErrorActionPreference = 'Stop', Write-Error threw a new error first.
+          Write-Error now uses -ErrorAction Continue.
+      Added
+        - -DnsServer parameter, passed through to all three check modules
+          (e.g. -DnsServer 1.1.1.1 to avoid office/split DNS answers).
+        - DNS server used is shown in Report Metadata and the JSON export.
+        - Check that Modules\Common.ps1 exists before running checks.
+      Changed
+        - Modules now share helpers from Modules\Common.ps1.
+
     2.0.1
       Fixed
         - "Cannot bind argument to parameter 'Path' because it is an empty
@@ -151,11 +174,13 @@ param(
 
     [string]$LogoPath,
 
+    [string]$DnsServer,
+
     [switch]$PassThru
 )
 
 $ErrorActionPreference = 'Stop'
-$ScriptVersion = '2.0.1'
+$ScriptVersion = '2.1.0'
 
 # -----------------------------------------------------------------------------
 # Resolve the script folder.
@@ -225,7 +250,8 @@ function Invoke-CheckModule {
         [Parameter(Mandatory)][string]$ModuleFile,
         [Parameter(Mandatory)][string]$Command,
         [Parameter(Mandatory)][string]$Category,
-        [Parameter(Mandatory)][string]$Domain
+        [Parameter(Mandatory)][string]$Domain,
+        [string]$DnsServer
     )
 
     $modulePath = Join-Path (Join-Path $ScriptDir 'Modules') $ModuleFile
@@ -242,7 +268,10 @@ function Invoke-CheckModule {
         }
 
         Write-Verbose "Running $Command against $Domain"
-        $raw = @(& $Command -Domain $Domain)
+        $checkParams = @{ Domain = $Domain }
+        if ($DnsServer) { $checkParams.DnsServer = $DnsServer }
+
+        $raw = @(& $Command @checkParams)
 
         if ($raw.Count -eq 0) {
             return @([PSCustomObject]@{
@@ -302,11 +331,23 @@ try {
     }
 
     # -------------------------------------------------------------------------
+    # Shared helpers must be present - every module dot-sources them
+    # -------------------------------------------------------------------------
+    $commonPath = Join-Path (Join-Path $ScriptDir 'Modules') 'Common.ps1'
+    if (-not (Test-Path -LiteralPath $commonPath)) {
+        throw "Shared helper file not found: $commonPath"
+    }
+
+    $dnsLabel = if ($DnsServer) { $DnsServer } else { 'System default' }
+    Write-Host "  DNS server: $dnsLabel" -ForegroundColor Cyan
+    Write-Host ""
+
+    # -------------------------------------------------------------------------
     # Run checks (each module isolated so one failure doesn't stop the report)
     # -------------------------------------------------------------------------
-    $emailResults = Invoke-CheckModule -ModuleFile 'EmailChecks.psm1'          -Command 'Test-EmailSecurity'  -Category 'Email'          -Domain $Domain
-    $webResults   = Invoke-CheckModule -ModuleFile 'WebChecks.psm1'            -Command 'Test-WebSecurity'    -Category 'Web'            -Domain $Domain
-    $infraResults = Invoke-CheckModule -ModuleFile 'InfrastructureChecks.psm1' -Command 'Test-Infrastructure' -Category 'Infrastructure' -Domain $Domain
+    $emailResults = Invoke-CheckModule -ModuleFile 'EmailChecks.psm1'          -Command 'Test-EmailSecurity'  -Category 'Email'          -Domain $Domain -DnsServer $DnsServer
+    $webResults   = Invoke-CheckModule -ModuleFile 'WebChecks.psm1'            -Command 'Test-WebSecurity'    -Category 'Web'            -Domain $Domain -DnsServer $DnsServer
+    $infraResults = Invoke-CheckModule -ModuleFile 'InfrastructureChecks.psm1' -Command 'Test-Infrastructure' -Category 'Infrastructure' -Domain $Domain -DnsServer $DnsServer
 
     # Placeholder until a breach API key is configured. Info = shown, not scored.
     $breachResults = @([PSCustomObject]@{
@@ -557,6 +598,7 @@ $recItems
 <p><strong>Generated:</strong> $generated</p>
 <p><strong>Checks run:</strong> $total ($scoredTotal scored, $($counts.Info) not scored)</p>
 <p><strong>Scoring:</strong> Pass = 1, Warning = 0.5, Fail = 0. Informational checks are not scored.</p>
+<p><strong>DNS server:</strong> $(ConvertTo-HtmlSafe $dnsLabel)</p>
 <p><strong>Tool version:</strong> Domain Checker v$ScriptVersion</p>
 </div>
 </div>
@@ -612,6 +654,7 @@ btn.textContent=dark?'Light Mode':'Dark Mode';
             Domain        = $Domain
             Generated     = $generated
             ToolVersion   = $ScriptVersion
+            DnsServer     = $dnsLabel
             Score         = $scorePercent
             Risk          = $riskRating
             Counts        = $counts
@@ -651,6 +694,6 @@ btn.textContent=dark?'Light Mode':'Dark Mode';
 }
 catch {
     Write-Host "  STATUS: ERROR | Domain: $Domain | $($_.Exception.Message)" -ForegroundColor Red
-    Write-Error $_
+    Write-Error $_ -ErrorAction Continue
     exit 1
 }
